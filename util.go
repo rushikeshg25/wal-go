@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 func createSegmentFile(dir string, segmentId int)(*os.File,error){
@@ -16,5 +18,16 @@ func createSegmentFile(dir string, segmentId int)(*os.File,error){
 }
 
 func findLastSegmentIndexinFiles(files []string)(int,error){
-	
+	var lastId int
+	for _,file:=range files{
+		_,fileName:=filepath.Split(file)
+		segmentId,err:=strconv.Atoi(strings.TrimPrefix(fileName,segmentFilenamePrefix))
+		if err!=nil{
+			return 0,err
+		}
+		if segmentId>lastId{
+			lastId=segmentId
+		}
+	}
+	return lastId,nil
 }
