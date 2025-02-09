@@ -1,0 +1,10 @@
+syntax ="proto3";
+
+option go_package = "github.com/rushikeshg25/wal-go";
+
+message WAL_Entry{
+    uint64 logSequenceNumber = 1;
+    bytes data = 2;
+    uint32 CRC = 3;
+    optional bool isCheckpoint = 4;
+}
