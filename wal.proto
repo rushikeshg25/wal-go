@@ -1,6 +1,6 @@
 syntax ="proto3";
 
-option go_package = "github.com/rushikeshg25/wal-go";
+option go_package = "./pb";
 
 message WAL_Entry{
     uint64 logSequenceNumber = 1;
