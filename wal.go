@@ -28,71 +28,69 @@ type WAL struct {
 }
 
 const (
-	segmentFilenamePrefix = "segment"
-	syncInterval = 200*time.Millisecond
+	segmentFilenamePrefix = "segment-"
+	syncInterval          = 200 * time.Millisecond
+	maxSegmentSize        = 1024 * 1024 * 1024
 )
 
-
-func OpenWAL(directory string, enableFsync bool, maxFileSize int64, maxSegments int) (*WAL, error){
-	if err:=os.MkdirAll(directory,0755);err!=nil{
-		return nil,err
+func OpenWAL(directory string, enableFsync bool, maxFileSize int64, maxSegments int) (*WAL, error) {
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		return nil, err
 	}
 
-	files,err:=filepath.Glob(filepath.Join(directory,segmentFilenamePrefix+"*"))
-	if err!=nil{
-		return nil,err
+	files, err := filepath.Glob(filepath.Join(directory, segmentFilenamePrefix+"*"))
+	if err != nil {
+		return nil, err
 	}
 
-	lastSegmentId:=0
-	if len(files)>0{
-		lastSegmentId,err=findLastSegmentIndexinFiles(files)
-		if err!=nil{
-			return nil,err
+	lastSegmentId := 0
+	if len(files) > 0 {
+		lastSegmentId, err = findLastSegmentIndexinFiles(files)
+		if err != nil {
+			return nil, err
 		}
-	}else{
-		file,err:=createSegmentFile(directory,0)
-		if err!=nil{
-			return nil,err
+	} else {
+		file, err := createSegmentFile(directory, 0)
+		if err != nil {
+			return nil, err
 		}
 
-		if err:=file.Close();err!=nil{
-			return nil,err
+		if err := file.Close(); err != nil {
+			return nil, err
 		}
 	}
 
-	filePath:=filepath.Join(directory,fmt.Sprintf("%s%d",segmentFilenamePrefix,lastSegmentId))
-	file,err:=os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err!=nil{
-		return nil,err
+	filePath := filepath.Join(directory, fmt.Sprintf("%s%d", segmentFilenamePrefix, lastSegmentId))
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
 	}
 
-	ctx,cancel:=context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 
-	wal:=&WAL{
-		directory: directory,
-		currentSegment: file,
-		lastSequenceNo: 0,
-		bufWriter: bufio.NewWriter(file),
-		syncTimer: time.NewTimer(syncInterval),
-		shouldFsync: enableFsync,
-		maxFileSize: maxFileSize,
-		maxSegments: maxSegments,
+	wal := &WAL{
+		directory:           directory,
+		currentSegment:      file,
+		lastSequenceNo:      0,
+		bufWriter:           bufio.NewWriter(file),
+		syncTimer:           time.NewTimer(syncInterval),
+		shouldFsync:         enableFsync,
+		maxFileSize:         maxFileSize,
+		maxSegments:         maxSegments,
 		currentSegmentIndex: lastSegmentId,
-		ctx: ctx,
-		cancel: cancel,
+		ctx:                 ctx,
+		cancel:              cancel,
 	}
 
-	if wal.lastSequenceNo,err=wal.getLastSequenceNo();err!=nil{
-		return nil,err
+	if wal.lastSequenceNo, err = wal.getLastSequenceNo(); err != nil {
+		return nil, err
 	}
 
+	return wal, nil
 
-    
-	return wal,nil
-	
 }
 
-func (wal *WAL) getLastSequenceNo() (uint64,error){
+func (wal *WAL) getLastSequenceNo() (uint64, error) {
 	entry, err := wal.getLastEntryInLog()
 	if err != nil {
 		return 0, err
