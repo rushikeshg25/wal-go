@@ -1,10 +1,8 @@
 syntax ="proto3";
-
 option go_package = "./pb";
 
 message WAL_Entry{
     uint64 logSequenceNumber = 1;
     bytes data = 2;
     uint32 CRC = 3;
-    optional bool isCheckpoint = 4;
 }

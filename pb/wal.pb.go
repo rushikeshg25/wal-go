@@ -26,7 +26,6 @@ type WAL_Entry struct {
 	LogSequenceNumber uint64                 `protobuf:"varint,1,opt,name=logSequenceNumber,proto3" json:"logSequenceNumber,omitempty"`
 	Data              []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
 	CRC               uint32                 `protobuf:"varint,3,opt,name=CRC,proto3" json:"CRC,omitempty"`
-	IsCheckpoint      *bool                  `protobuf:"varint,4,opt,name=isCheckpoint,proto3,oneof" json:"isCheckpoint,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -82,24 +81,15 @@ func (x *WAL_Entry) GetCRC() uint32 {
 	return 0
 }
 
-func (x *WAL_Entry) GetIsCheckpoint() bool {
-	if x != nil && x.IsCheckpoint != nil {
-		return *x.IsCheckpoint
-	}
-	return false
-}
-
 var File_wal_proto protoreflect.FileDescriptor
 
 const file_wal_proto_rawDesc = "" +
 	"\n" +
-	"\twal.proto\"\x99\x01\n" +
+	"\twal.proto\"_\n" +
 	"\tWAL_Entry\x12,\n" +
 	"\x11logSequenceNumber\x18\x01 \x01(\x04R\x11logSequenceNumber\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x10\n" +
-	"\x03CRC\x18\x03 \x01(\rR\x03CRC\x12'\n" +
-	"\fisCheckpoint\x18\x04 \x01(\bH\x00R\fisCheckpoint\x88\x01\x01B\x0f\n" +
-	"\r_isCheckpointB\x06Z\x04./pbb\x06proto3"
+	"\x03CRC\x18\x03 \x01(\rR\x03CRCB\x06Z\x04./pbb\x06proto3"
 
 var (
 	file_wal_proto_rawDescOnce sync.Once
@@ -130,7 +120,6 @@ func file_wal_proto_init() {
 	if File_wal_proto != nil {
 		return
 	}
-	file_wal_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
