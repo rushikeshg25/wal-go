@@ -80,3 +80,9 @@ func readLastLogs(files []os.DirEntry, directory string) (*os.File, error) {
 	}
 	return file, nil
 }
+
+func (wl *WAL) WriteLog() {}
+
+// func (wl *WAL) Close() error {}
+
+// func (wl *WAL) Sync() error {}
