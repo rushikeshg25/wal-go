@@ -1,10 +1,8 @@
-# WAL-Go 📝
+# wal-go
 
 A high-performance, thread-safe Write-Ahead Log (WAL) implementation in Go with automatic file rotation, checksums, and configurable persistence.
 
 [![Go Version](https://img.shields.io/badge/Go-1.19+-blue.svg)](https://golang.org)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
 ## 🚀 Features
 
@@ -19,7 +17,7 @@ A high-performance, thread-safe Write-Ahead Log (WAL) implementation in Go with 
 ## 📦 Installation
 
 ```bash
-go get github.com/rushikeshg25/wal-go
+go get -u github.com/rushikeshg25/wal-go
 ```
 
 ## 🏗️ Architecture
@@ -148,14 +146,6 @@ for _, entry := range logs {
 
 ## 🏃‍♂️ Performance
 
-### Benchmarks
-
-```
-BenchmarkWriteLog-8         100000    12543 ns/op    256 B/op    3 allocs/op
-BenchmarkReadLogs-8          50000    28934 ns/op    512 B/op    8 allocs/op
-BenchmarkSync-8               5000   234567 ns/op      0 B/op    0 allocs/op
-```
-
 ### Tuning Tips
 
 1. **Buffer Size**: Larger buffers reduce I/O overhead but increase memory usage
@@ -202,59 +192,6 @@ if err := wal.Repair(); err != nil {
 }
 ```
 
-## 📊 Monitoring
-
-### Key Metrics to Monitor
-
-- **Write Latency**: Time taken for `WriteLog()` operations
-- **Sync Latency**: Time taken for `Sync()` operations
-- **File Rotation Frequency**: How often new files are created
-- **Disk Usage**: Total space consumed by WAL files
-- **Sequence Numbers**: Monitor for gaps indicating potential issues
-
-### Example Monitoring
-
-```go
-type WALMetrics struct {
-    WritesTotal    int64
-    SyncsTotal     int64
-    RotationsTotal int64
-    LastSeqNo      uint64
-}
-
-// Add metrics collection to your WAL usage
-func (m *WALMetrics) RecordWrite(seqNo uint64) {
-    atomic.AddInt64(&m.WritesTotal, 1)
-    atomic.StoreUint64(&m.LastSeqNo, seqNo)
-}
-```
-
-## 🐛 Error Handling
-
-WAL-Go provides detailed error information for different failure scenarios:
-
-```go
-if err := wal.WriteLog(data); err != nil {
-    switch {
-    case os.IsPermission(err):
-        log.Printf("Permission denied: %v", err)
-    case os.IsNotExist(err):
-        log.Printf("Directory not found: %v", err)
-    default:
-        log.Printf("Write failed: %v", err)
-    }
-}
-```
-
-## 🚧 Roadmap
-
-- [ ] Compression support for WAL files
-- [ ] Encryption at rest
-- [ ] Metrics and observability improvements
-- [ ] WAL file compaction
-- [ ] Async write options
-- [ ] Snapshot support
-- [ ] Distributed WAL replication
 
 ## 🤝 Contributing
 
@@ -273,12 +210,3 @@ go mod download
 go test ./...
 ```
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Protocol Buffers for efficient serialization
-- The Go team for excellent standard library support
-- Contributors and users of this library
