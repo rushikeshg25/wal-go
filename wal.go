@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"strconv"
 	"sync"
@@ -66,10 +67,16 @@ func WALInit(directory string, maxFileSize int64, maxFiles int) (*WAL, error) {
 		}
 
 	} else {
-		file, err = readLastLogs(files, directory)
+		num, err := InitExisingWAL(files, directory)
 		if err != nil {
 			return nil, err
 		}
+		file, err = os.OpenFile(directory+"/"+walFilenamePrefix+strconv.Itoa(num+1), os.O_RDWR, 0644)
+		if err != nil {
+			wl.currentFile.Close()
+			return nil, err
+		}
+		wl.currentFileNo = num + 1
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -188,11 +195,53 @@ func (wl *WAL) Close() {
 	wl.currentFile.Close()
 }
 
-func readLastLogs(files []os.DirEntry, directory string) (*os.File, error) {
-	lastFile := files[len(files)-1].Name()
-	file, err := os.OpenFile(directory+"/"+lastFile, os.O_RDWR, 0755)
+func (wl *WAL) ReadAllLogsFromCurrentFile() ([]*pb.WAL_Entry, error) {
+	file, err := os.OpenFile(wl.directory+"/"+walFilenamePrefix+strconv.Itoa(wl.currentFileNo), os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
-	return file, nil
+	defer file.Close()
+
+	logs, err := wl.ReadLogsFromFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	return logs, nil
+}
+
+func (wl *WAL) ReadLogsFromFile(file *os.File) ([]*pb.WAL_Entry, error) {
+	var logs []*pb.WAL_Entry
+	for {
+		var size int32
+		if err := binary.Read(file, binary.LittleEndian, &size); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		data := make([]byte, size)
+		if _, err := io.ReadFull(file, data); err != nil {
+			return nil, err
+		}
+
+		logEntry := UnMarshall(data)
+		logs = append(logs, logEntry)
+	}
+	return logs, nil
+}
+
+func InitExisingWAL(files []os.DirEntry, directory string) (int, error) {
+	lastFile := files[len(files)-1].Name()
+	lastFileNo, err := strconv.Atoi(lastFile[len(lastFile)-1:])
+	if err != nil {
+		return 000, err
+	}
+
+	return lastFileNo, nil
+}
+
+func (wl *WAL) Repair() error {
+	return nil
 }
