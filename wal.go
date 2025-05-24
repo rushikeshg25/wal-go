@@ -243,5 +243,16 @@ func InitExisingWAL(files []os.DirEntry, directory string) (int, error) {
 }
 
 func (wl *WAL) Repair() error {
+	files, err := os.ReadDir(wl.directory)
+	if err != nil {
+		return err
+	}
+
+	if len(files) == 0 {
+		panic("No files found")
+	} else {
+
+	}
+
 	return nil
 }
