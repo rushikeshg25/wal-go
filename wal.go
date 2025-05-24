@@ -61,6 +61,7 @@ func WALInit(directory string, maxFileSize int64, maxFiles int) (*WAL, error) {
 	if len(files) == 0 {
 		file, err = os.Create(directory + "/" + walFilenamePrefix + strconv.Itoa(wl.currentFileNo))
 		if err != nil {
+			wl.currentFile.Close()
 			return nil, err
 		}
 
@@ -80,15 +81,6 @@ func WALInit(directory string, maxFileSize int64, maxFiles int) (*WAL, error) {
 	go wl.syncwithTimer()
 
 	return wl, nil
-}
-
-func readLastLogs(files []os.DirEntry, directory string) (*os.File, error) {
-	lastFile := files[len(files)-1].Name()
-	file, err := os.OpenFile(directory+"/"+lastFile, os.O_RDWR, 0755)
-	if err != nil {
-		return nil, err
-	}
-	return file, nil
 }
 
 func (wl *WAL) WriteLog(data []byte) error {
@@ -188,16 +180,19 @@ func (wl *WAL) deleteOldestFile(file string) error {
 	return err
 }
 
-// func (wl *WAL) Close() error {}
+func (wl *WAL) Close() {
+	wl.cancel()
+	if err := wl.Sync(); err != nil {
+		fmt.Println("Sync failed")
+	}
+	wl.currentFile.Close()
+}
 
-// func (wl *WAL) Sync() error {}
-
-// directory      string
-// 	currentFile    *os.File
-// 	lock           sync.Mutex
-// 	lastSequenceNo uint64
-// 	bufWriter      *bufio.Writer
-// 	syncTimer      *time.Timer
-// 	maxFileSize    int64
-// 	maxLogs        int
-// 	currentFileNo  int
+func readLastLogs(files []os.DirEntry, directory string) (*os.File, error) {
+	lastFile := files[len(files)-1].Name()
+	file, err := os.OpenFile(directory+"/"+lastFile, os.O_RDWR, 0755)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
