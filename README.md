@@ -136,14 +136,6 @@ for _, entry := range logs {
 | `maxFileSize` | int64  | -       | Maximum size per WAL file (bytes)     |
 | `maxFiles`    | int    | -       | Maximum number of WAL files to retain |
 
-### Constants
-
-| Constant            | Value  | Description              |
-| ------------------- | ------ | ------------------------ |
-| `syncInterval`      | 200ms  | Automatic sync frequency |
-| `maxSegmentSize`    | 1GB    | Maximum segment size     |
-| `walFilenamePrefix` | "wal-" | Prefix for WAL files     |
-
 ## 🏃‍♂️ Performance
 
 ### Tuning Tips
