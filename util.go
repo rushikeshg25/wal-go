@@ -1,8 +1,6 @@
 package walgo
 
 import (
-	"hash/crc32"
-
 	"github.com/rushikeshg25/wal-go/pb"
 	"google.golang.org/protobuf/proto"
 )
@@ -25,7 +23,7 @@ func UnMarshall(data []byte) *pb.WAL_Entry {
 }
 
 func verifyCRC(entry *pb.WAL_Entry) bool {
-	actualCRC := crc32.ChecksumIEEE(append(entry.GetData(), byte(entry.GetLogSequenceNumber())))
+	actualCRC := checksum(entry.GetLogSequenceNumber(), entry.GetData())
 
 	return entry.CRC == actualCRC
 }
