@@ -1,258 +1,324 @@
 package walgo
 
 import (
-	"bufio"
-	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"hash/crc32"
-	"io"
+	"github.com/rushikeshg25/wal-go/pb"
+	"google.golang.org/protobuf/proto"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/rushikeshg25/wal-go/pb"
 )
+
+var ErrClosed = errors.New("wal: closed")
+var ErrPoisoned = errors.New("wal: poisoned")
 
 type WAL struct {
-	directory      string
-	currentFile    *os.File
-	lock           sync.Mutex
-	lastSequenceNo uint64
-	bufWriter      *bufio.Writer
-	syncTimer      *time.Timer
-	maxFileSize    int64
-	maxFiles       int
-	currentFileNo  int
-	ctx            context.Context
-	cancel         context.CancelFunc
+	directory               string
+	currentFile             *os.File
+	lock                    sync.Mutex
+	lastSequenceNo          uint64
+	maxFileSize             int64
+	maxFiles, currentFileNo int
+	end                     int64
+	closed                  bool
+	poison                  error
+	stop, done              chan struct{}
 }
 
-const (
-	walFilenamePrefix = "wal-"
-	syncInterval      = 200 * time.Millisecond
-	maxSegmentSize    = 1024 * 1024 * 1024
-)
-
+func ids(dir string) ([]int, error) {
+	entries, e := os.ReadDir(dir)
+	if e != nil {
+		return nil, e
+	}
+	out := []int{}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "wal-") {
+			continue
+		}
+		n, e := strconv.Atoi(strings.TrimPrefix(entry.Name(), "wal-"))
+		if e != nil || n < 0 || entry.IsDir() || entry.Name() != fmt.Sprintf("wal-%d", n) {
+			return nil, fmt.Errorf("invalid segment %q", entry.Name())
+		}
+		out = append(out, n)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+func (w *WAL) path(id int) string { return filepath.Join(w.directory, fmt.Sprintf("wal-%d", id)) }
+func syncDir(dir string) error {
+	f, e := os.Open(dir)
+	if e != nil {
+		return e
+	}
+	defer f.Close()
+	return f.Sync()
+}
+func (w *WAL) create(id int) error {
+	f, e := os.OpenFile(w.path(id), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if e != nil {
+		return e
+	}
+	h := make([]byte, 16)
+	copy(h, magic)
+	binary.LittleEndian.PutUint64(h[8:], w.lastSequenceNo)
+	if e = writeFull(f, h, 0); e == nil {
+		e = f.Sync()
+	}
+	if e == nil {
+		e = syncDir(w.directory)
+	}
+	if e != nil {
+		f.Close()
+		return e
+	}
+	w.currentFile = f
+	w.currentFileNo = id
+	w.end = 16
+	return nil
+}
 func WALInit(directory string, maxFileSize int64, maxFiles int) (*WAL, error) {
-	wl := &WAL{
-		directory:      directory,
-		currentFile:    nil,
-		lastSequenceNo: 0,
-		bufWriter:      nil,
-		syncTimer:      time.NewTimer(syncInterval),
-		maxFileSize:    maxFileSize,
-		maxFiles:       maxFiles,
-		currentFileNo:  0,
+	if maxFileSize < 64 || maxFiles < 1 {
+		return nil, errors.New("maxFileSize must be >=64 and maxFiles >=1")
 	}
-
-	var file *os.File
-	var err error
-
-	if err = os.MkdirAll(directory, 0755); err != nil {
-		return nil, err
+	if e := os.MkdirAll(directory, 0700); e != nil {
+		return nil, e
 	}
-
-	files, err := os.ReadDir(directory)
-	if err != nil {
-		return nil, err
+	list, e := ids(directory)
+	if e != nil {
+		return nil, e
 	}
-
-	if len(files) == 0 {
-		file, err = os.Create(directory + "/" + walFilenamePrefix + strconv.Itoa(wl.currentFileNo))
-		if err != nil {
-			wl.currentFile.Close()
-			return nil, err
+	w := &WAL{directory: directory, maxFileSize: maxFileSize, maxFiles: maxFiles, stop: make(chan struct{}), done: make(chan struct{})}
+	for i, id := range list {
+		f, e := os.OpenFile(w.path(id), os.O_RDWR, 0600)
+		if e != nil {
+			return nil, e
 		}
-
-	} else {
-		num, err := InitExisingWAL(files, directory)
-		if err != nil {
-			return nil, err
+		_, base, last, end, e := scan(f, i == len(list)-1)
+		if e != nil {
+			f.Close()
+			return nil, e
 		}
-		file, err = os.OpenFile(directory+"/"+walFilenamePrefix+strconv.Itoa(num+1), os.O_RDWR, 0644)
-		if err != nil {
-			wl.currentFile.Close()
-			return nil, err
+		if i > 0 && (id != list[i-1]+1 || base != w.lastSequenceNo) {
+			f.Close()
+			return nil, errors.New("noncontiguous WAL segments")
 		}
-		wl.currentFileNo = num + 1
+		w.lastSequenceNo = last
+		w.end = end
+		w.currentFileNo = id
+		if i == len(list)-1 {
+			w.currentFile = f
+		} else {
+			f.Close()
+		}
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	wl.currentFile = file
-	wl.bufWriter = bufio.NewWriter(file)
-	wl.ctx = ctx
-	wl.cancel = cancel
-
-	go wl.syncwithTimer()
-
-	return wl, nil
-}
-
-func (wl *WAL) WriteLog(data []byte) error {
-
-	if err := wl.checkCurrentFileSize(); err != nil {
-		return err
+	if len(list) == 0 {
+		if e = w.create(0); e != nil {
+			return nil, e
+		}
 	}
-
-	wl.lock.Lock()
-	defer wl.lock.Unlock()
-	wl.lastSequenceNo++
-	entry := &pb.WAL_Entry{
-		LogSequenceNumber: wl.lastSequenceNo,
-		Data:              data,
-		CRC:               crc32.ChecksumIEEE(append(data, byte(wl.lastSequenceNo))),
+	if e = w.retain(); e != nil {
+		w.currentFile.Close()
+		return nil, e
 	}
-	return wl.WriteWALEntryToBuffer(entry)
+	go w.syncLoop()
+	return w, nil
 }
-
-func (wl *WAL) WriteWALEntryToBuffer(logEntry *pb.WAL_Entry) error {
-	logEntryBytes := Marshal(logEntry)
-	size := int32(len(logEntryBytes))
-	if err := binary.Write(wl.bufWriter, binary.LittleEndian, size); err != nil {
-		return err
+func (w *WAL) check() error {
+	if w.closed {
+		return ErrClosed
 	}
-	_, err := wl.bufWriter.Write(logEntryBytes)
-	return err
+	if w.poison != nil {
+		return errors.Join(ErrPoisoned, w.poison)
+	}
+	return nil
 }
-
-func (wl *WAL) Sync() error {
-	err := wl.bufWriter.Flush()
-	return err
+func (w *WAL) fail(e error) error {
+	if e != nil {
+		w.poison = e
+	}
+	return e
 }
-
-func (wl *WAL) syncwithTimer() {
+func (w *WAL) retain() error {
+	list, e := ids(w.directory)
+	if e != nil {
+		return e
+	}
+	removed := false
+	for len(list) > w.maxFiles {
+		if e = os.Remove(w.path(list[0])); e != nil {
+			return e
+		}
+		list = list[1:]
+		removed = true
+	}
+	if removed {
+		return syncDir(w.directory)
+	}
+	return nil
+}
+func (w *WAL) append(entry *pb.WAL_Entry) error {
+	if e := w.check(); e != nil {
+		return e
+	}
+	if len(entry.Data) > maxRecord-64 || w.lastSequenceNo == ^uint64(0) {
+		return errors.New("WAL record or sequence limit")
+	}
+	if entry.LogSequenceNumber != w.lastSequenceNo+1 || entry.CRC != checksum(entry.LogSequenceNumber, entry.Data) {
+		return errors.New("invalid sequence or checksum")
+	}
+	data, e := proto.Marshal(entry)
+	if e != nil {
+		return e
+	}
+	if int64(len(data))+20 > w.maxFileSize {
+		return errors.New("record exceeds segment capacity")
+	}
+	if w.end+4+int64(len(data)) > w.maxFileSize {
+		if e = w.currentFile.Sync(); e != nil {
+			return w.fail(e)
+		}
+		old := w.currentFile
+		if e = w.create(w.currentFileNo + 1); e != nil {
+			return w.fail(e)
+		}
+		if e = old.Close(); e != nil {
+			return w.fail(e)
+		}
+		if e = w.retain(); e != nil {
+			return w.fail(e)
+		}
+	}
+	record := make([]byte, 4+len(data))
+	binary.LittleEndian.PutUint32(record, uint32(len(data)))
+	copy(record[4:], data)
+	if e = writeFull(w.currentFile, record, w.end); e != nil {
+		return w.fail(e)
+	}
+	w.end += int64(len(record))
+	w.lastSequenceNo = entry.LogSequenceNumber
+	return nil
+}
+func (w *WAL) WriteLog(data []byte) error {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	seq := w.lastSequenceNo + 1
+	return w.append(&pb.WAL_Entry{LogSequenceNumber: seq, Data: data, CRC: checksum(seq, data)})
+}
+func (w *WAL) WriteWALEntryToBuffer(entry *pb.WAL_Entry) error {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if entry == nil {
+		return errors.New("nil entry")
+	}
+	return w.append(entry)
+}
+func (w *WAL) Sync() error {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if e := w.check(); e != nil {
+		return e
+	}
+	return w.fail(w.currentFile.Sync())
+}
+func (w *WAL) syncLoop() {
+	defer close(w.done)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
-		case <-wl.syncTimer.C:
-			wl.lock.Lock()
-			err := wl.Sync()
-			wl.lock.Unlock()
-			if err != nil {
-				fmt.Println("Sync failed")
-			}
-		case <-wl.ctx.Done():
+		case <-w.stop:
 			return
+		case <-ticker.C:
+			_ = w.Sync()
 		}
 	}
 }
-
-func (wl *WAL) checkCurrentFileSize() error {
-	stat, err := wl.currentFile.Stat()
-	if err != nil {
-		return err
+func (w *WAL) Close() error {
+	w.lock.Lock()
+	if w.closed {
+		w.lock.Unlock()
+		<-w.done
+		return nil
 	}
-
-	if stat.Size()+int64(wl.bufWriter.Buffered()) >= wl.maxFileSize {
-		if err := wl.createNewWALFile(); err != nil {
-			return err
+	w.closed = true
+	close(w.stop)
+	e := errors.Join(w.poison, w.currentFile.Sync(), w.currentFile.Close())
+	w.lock.Unlock()
+	<-w.done
+	return e
+}
+func (w *WAL) ReadAllLogsFromCurrentFile() ([]*pb.WAL_Entry, error) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if e := w.check(); e != nil {
+		return nil, e
+	}
+	records, _, _, _, e := scan(w.currentFile, false)
+	return records, e
+}
+func (w *WAL) ReadLogsFromFile(file *os.File) ([]*pb.WAL_Entry, error) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if e := w.check(); e != nil {
+		return nil, e
+	}
+	records, _, _, _, e := scan(file, false)
+	return records, e
+}
+func (w *WAL) ReadAll() ([]*pb.WAL_Entry, error) {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if e := w.check(); e != nil {
+		return nil, e
+	}
+	list, e := ids(w.directory)
+	if e != nil {
+		return nil, e
+	}
+	var out []*pb.WAL_Entry
+	for _, id := range list {
+		f, e := os.Open(w.path(id))
+		if e != nil {
+			return nil, e
 		}
+		records, _, _, _, e := scan(f, false)
+		f.Close()
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, records...)
 	}
+	return out, nil
+}
+
+// Repair only truncates a structurally incomplete tail in the current segment.
+func (w *WAL) Repair() error {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	if e := w.check(); e != nil {
+		return e
+	}
+	_, _, last, end, e := scan(w.currentFile, true)
+	if e != nil {
+		return w.fail(e)
+	}
+	w.lastSequenceNo = last
+	w.end = end
 	return nil
 }
-
-func (wl *WAL) createNewWALFile() error {
-	if err := wl.Sync(); err != nil {
-		return err
-	}
-
-	if err := wl.currentFile.Close(); err != nil {
-		return err
-	}
-
-	wl.currentFileNo++
-	file, err := os.Create(wl.directory + "/" + walFilenamePrefix + strconv.Itoa(wl.currentFileNo))
-	if err != nil {
-		return err
-	}
-	wl.currentFile = file
-	wl.bufWriter = bufio.NewWriter(file)
-
-	files, err := os.ReadDir(wl.directory)
-	if err != nil {
-		return err
-	}
-	if len(files) >= wl.maxFiles {
-		err := wl.deleteOldestFile(files[0].Name())
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (wl *WAL) deleteOldestFile(file string) error {
-	err := os.Remove(wl.directory + "/" + file)
-	return err
-}
-
-func (wl *WAL) Close() {
-	wl.cancel()
-	if err := wl.Sync(); err != nil {
-		fmt.Println("Sync failed")
-	}
-	wl.currentFile.Close()
-}
-
-func (wl *WAL) ReadAllLogsFromCurrentFile() ([]*pb.WAL_Entry, error) {
-	file, err := os.OpenFile(wl.directory+"/"+walFilenamePrefix+strconv.Itoa(wl.currentFileNo), os.O_RDONLY, 0644)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	logs, err := wl.ReadLogsFromFile(file)
-	if err != nil {
-		return nil, err
-	}
-
-	return logs, nil
-}
-
-func (wl *WAL) ReadLogsFromFile(file *os.File) ([]*pb.WAL_Entry, error) {
-	var logs []*pb.WAL_Entry
-	for {
-		var size int32
-		if err := binary.Read(file, binary.LittleEndian, &size); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-
-		data := make([]byte, size)
-		if _, err := io.ReadFull(file, data); err != nil {
-			return nil, err
-		}
-
-		logEntry := UnMarshall(data)
-		logs = append(logs, logEntry)
-	}
-	return logs, nil
-}
-
 func InitExisingWAL(files []os.DirEntry, directory string) (int, error) {
-	lastFile := files[len(files)-1].Name()
-	lastFileNo, err := strconv.Atoi(lastFile[len(lastFile)-1:])
-	if err != nil {
-		return 000, err
+	list, e := ids(directory)
+	if e != nil {
+		return 0, e
 	}
-
-	return lastFileNo, nil
-}
-
-func (wl *WAL) Repair() error {
-	files, err := os.ReadDir(wl.directory)
-	if err != nil {
-		return err
+	if len(list) == 0 {
+		return 0, errors.New("no WAL segments")
 	}
-
-	if len(files) == 0 {
-		panic("No files found")
-	} else {
-
-	}
-
-	return nil
+	return list[len(list)-1], nil
 }
